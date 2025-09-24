@@ -1,11 +1,19 @@
 #include "../include/hot_reload.h"
 
 HotReloadManager::HotReloadManager(JarLoader* jarLoader) 
-    : jarLoader_(jarLoader), monitoring_(false) {
+    : jarLoader_(jarLoader), monitoring_(false), lastError_(ErrorCode::SUCCESS) {
+    if (!jarLoader_) {
+        LOG_ERROR(L"JarLoader pointer is null in HotReloadManager constructor");
+        lastError_ = ErrorCode::INVALID_PARAMETER;
+    } else {
+        LOG_DEBUG(L"HotReloadManager created successfully");
+    }
 }
 
 HotReloadManager::~HotReloadManager() {
+    LOG_DEBUG(L"HotReloadManager destroying...");
     StopMonitoring();
+    LOG_DEBUG(L"HotReloadManager destroyed");
 }
 
 bool HotReloadManager::StartMonitoring(const std::wstring& jarPath, const std::string& className, const std::string& methodName) {
