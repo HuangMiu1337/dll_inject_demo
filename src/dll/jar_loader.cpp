@@ -1,57 +1,103 @@
 #include "../include/jar_loader.h"
 #include "../include/common.h"
 #include <shlwapi.h>
+#include <mutex>
+#include <unordered_map>
 
-JarLoader::JarLoader() : jvm_(nullptr), env_(nullptr), initialized_(false) {
+JarLoader::JarLoader() 
+    : jvm_(nullptr), env_(nullptr), initialized_(false), 
+      lastError_(ErrorCode::SUCCESS), classLoader_(nullptr) {
+    LOG_DEBUG(L"JarLoader created");
 }
 
 JarLoader::~JarLoader() {
-    UnloadJar();
+    LOG_DEBUG(L"JarLoader destroying...");
+    Cleanup();
+    LOG_DEBUG(L"JarLoader destroyed");
 }
 
-bool JarLoader::InitializeJVM() {
+ErrorCode JarLoader::InitializeJVM() {
+    std::lock_guard<std::mutex> lock(jniMutex_);
+    
     if (initialized_) {
         LOG_INFO(L"JVM already initialized");
-        return true;
+        SetLastError(ErrorCode::SUCCESS);
+        return ErrorCode::SUCCESS;
     }
 
     try {
         // 检查是否已经有JVM实例
         JavaVM* existingJVMs[1];
-        jsize numJVMs;
+        jsize numJVMs = 0;
         jint result = JNI_GetCreatedJavaVMs(existingJVMs, 1, &numJVMs);
         
         if (result == JNI_OK && numJVMs > 0) {
             // 使用现有的JVM
             jvm_ = existingJVMs[0];
+            if (!jvm_) {
+                LOG_ERROR(L"Retrieved JVM pointer is null");
+                SetLastError(ErrorCode::JVM_INIT_FAILED);
+                return ErrorCode::JVM_INIT_FAILED;
+            }
+            
             result = jvm_->AttachCurrentThread((void**)&env_, NULL);
             if (result != JNI_OK) {
-                LOG_ERROR(L"Failed to attach to existing JVM thread");
-                return false;
+                LOG_ERROR(L"Failed to attach to existing JVM thread, error code: " << result);
+                SetLastError(ErrorCode::JVM_INIT_FAILED);
+                return ErrorCode::JVM_INIT_FAILED;
             }
-            LOG_INFO(L"Attached to existing JVM");
+            
+            if (!env_) {
+                LOG_ERROR(L"JNI environment is null after attach");
+                SetLastError(ErrorCode::JVM_INIT_FAILED);
+                return ErrorCode::JVM_INIT_FAILED;
+            }
+            
+            LOG_INFO(L"Attached to existing JVM successfully");
         } else {
             // 创建新的JVM（通常不会发生，因为我们注入到已有的Java进程）
             LOG_INFO(L"No existing JVM found, creating new one");
             
             JavaVMInitArgs vmArgs;
             std::vector<JavaVMOption> options;
-            SetupJVMArgs(vmArgs, options, L"");
+            ErrorCode setupResult = SetupJVMArgs(vmArgs, options, L"");
+            if (setupResult != ErrorCode::SUCCESS) {
+                LOG_ERROR(L"Failed to setup JVM arguments");
+                SetLastError(setupResult);
+                return setupResult;
+            }
             
             result = JNI_CreateJavaVM(&jvm_, (void**)&env_, &vmArgs);
             if (result != JNI_OK) {
                 LOG_ERROR(L"Failed to create JVM, error code: " << result);
-                return false;
+                SetLastError(ErrorCode::JVM_INIT_FAILED);
+                return ErrorCode::JVM_INIT_FAILED;
+            }
+            
+            if (!jvm_ || !env_) {
+                LOG_ERROR(L"JVM or JNI environment is null after creation");
+                SetLastError(ErrorCode::JVM_INIT_FAILED);
+                return ErrorCode::JVM_INIT_FAILED;
             }
         }
         
+        // 检查JNI版本
+        jint version = env_->GetVersion();
+        LOG_INFO(L"JNI version: " << std::hex << version);
+        
         initialized_ = true;
+        SetLastError(ErrorCode::SUCCESS);
         LOG_INFO(L"JVM initialization successful");
-        return true;
+        return ErrorCode::SUCCESS;
         
     } catch (const std::exception& e) {
         LOG_ERROR(L"Exception during JVM initialization: " << StringToWString(e.what()));
-        return false;
+        SetLastError(ErrorCode::JVM_INIT_FAILED);
+        return ErrorCode::JVM_INIT_FAILED;
+    } catch (...) {
+        LOG_ERROR(L"Unknown exception during JVM initialization");
+        SetLastError(ErrorCode::UNKNOWN_ERROR);
+        return ErrorCode::UNKNOWN_ERROR;
     }
 }
 
@@ -247,13 +293,264 @@ jclass JarLoader::FindClass(const std::string& className) {
 }
 
 jmethodID JarLoader::FindMethod(jclass clazz, const std::string& methodName, const std::string& signature) {
-    if (!env_ || !clazz) return nullptr;
+    if (!env_ || !clazz) {
+        return nullptr;
+    }
     
-    // 首先尝试静态方法
     jmethodID method = env_->GetStaticMethodID(clazz, methodName.c_str(), signature.c_str());
-    if (method) return method;
+    if (!method) {
+        LOG_ERROR(L"Method not found: " << StringToWString(methodName));
+    }
     
-    // 清除异常并尝试实例方法
-    env_->ExceptionClear();
-    return env_->GetMethodID(clazz, methodName.c_str(), signature.c_str());
+    return method;
+}
+
+// 新增的辅助方法实现
+ErrorCode JarLoader::SetupJVMArgs(JavaVMInitArgs& vmArgs, std::vector<JavaVMOption>& options, const std::wstring& jarPath) {
+    try {
+        options.clear();
+        
+        // 基本JVM选项
+        JavaVMOption option1;
+        option1.optionString = const_cast<char*>("-Djava.class.path=.");
+        options.push_back(option1);
+        
+        // 如果提供了JAR路径，添加到classpath
+        std::string jarPathStr;
+        if (!jarPath.empty()) {
+            jarPathStr = WStringToString(jarPath);
+            std::string classpathOption = "-Djava.class.path=" + jarPathStr;
+            JavaVMOption jarOption;
+            jarOption.optionString = const_cast<char*>(classpathOption.c_str());
+            options.push_back(jarOption);
+        }
+        
+        vmArgs.version = JNI_VERSION_1_8;
+        vmArgs.nOptions = static_cast<jint>(options.size());
+        vmArgs.options = options.data();
+        vmArgs.ignoreUnrecognized = JNI_FALSE;
+        
+        return ErrorCode::SUCCESS;
+    } catch (const std::exception& e) {
+        LOG_ERROR(L"Exception in SetupJVMArgs: " << StringToWString(e.what()));
+        return ErrorCode::INVALID_PARAMETER;
+    }
+}
+
+bool JarLoader::CheckJNIException() {
+    if (!env_) {
+        return false;
+    }
+    
+    if (env_->ExceptionCheck()) {
+        jthrowable exception = env_->ExceptionOccurred();
+        if (exception) {
+            env_->ExceptionDescribe();
+            env_->ExceptionClear();
+            LOG_ERROR(L"JNI exception detected and cleared");
+        }
+        return true;
+    }
+    return false;
+}
+
+ErrorCode JarLoader::CreateClassLoader(const std::wstring& jarPath) {
+    if (!env_ || jarPath.empty()) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    
+    try {
+        // 创建File对象
+        jclass fileClass = env_->FindClass("java/io/File");
+        if (!fileClass || CheckJNIException()) {
+            LOG_ERROR(L"Failed to find File class");
+            return ErrorCode::CLASS_NOT_FOUND;
+        }
+        
+        jmethodID fileConstructor = env_->GetMethodID(fileClass, "<init>", "(Ljava/lang/String;)V");
+        if (!fileConstructor || CheckJNIException()) {
+            LOG_ERROR(L"Failed to find File constructor");
+            return ErrorCode::METHOD_NOT_FOUND;
+        }
+        
+        std::string jarPathStr = WStringToString(jarPath);
+        jstring jarPathJStr = env_->NewStringUTF(jarPathStr.c_str());
+        if (!jarPathJStr || CheckJNIException()) {
+            LOG_ERROR(L"Failed to create jar path string");
+            return ErrorCode::MEMORY_ALLOCATION_FAILED;
+        }
+        
+        jobject jarFile = env_->NewObject(fileClass, fileConstructor, jarPathJStr);
+        if (!jarFile || CheckJNIException()) {
+            LOG_ERROR(L"Failed to create File object");
+            env_->DeleteLocalRef(jarPathJStr);
+            return ErrorCode::OBJECT_CREATION_FAILED;
+        }
+        
+        // 创建URL对象
+        jmethodID toURIMethod = env_->GetMethodID(fileClass, "toURI", "()Ljava/net/URI;");
+        if (!toURIMethod || CheckJNIException()) {
+            LOG_ERROR(L"Failed to find toURI method");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            return ErrorCode::METHOD_NOT_FOUND;
+        }
+        
+        jobject uri = env_->CallObjectMethod(jarFile, toURIMethod);
+        if (!uri || CheckJNIException()) {
+            LOG_ERROR(L"Failed to get URI");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            return ErrorCode::METHOD_CALL_FAILED;
+        }
+        
+        jclass uriClass = env_->FindClass("java/net/URI");
+        jmethodID toURLMethod = env_->GetMethodID(uriClass, "toURL", "()Ljava/net/URL;");
+        if (!toURLMethod || CheckJNIException()) {
+            LOG_ERROR(L"Failed to find toURL method");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            env_->DeleteLocalRef(uri);
+            return ErrorCode::METHOD_NOT_FOUND;
+        }
+        
+        jobject url = env_->CallObjectMethod(uri, toURLMethod);
+        if (!url || CheckJNIException()) {
+            LOG_ERROR(L"Failed to get URL");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            env_->DeleteLocalRef(uri);
+            return ErrorCode::METHOD_CALL_FAILED;
+        }
+        
+        // 创建URLClassLoader
+        jclass urlClassLoaderClass = env_->FindClass("java/net/URLClassLoader");
+        if (!urlClassLoaderClass || CheckJNIException()) {
+            LOG_ERROR(L"Failed to find URLClassLoader class");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            env_->DeleteLocalRef(uri);
+            env_->DeleteLocalRef(url);
+            return ErrorCode::CLASS_NOT_FOUND;
+        }
+        
+        jmethodID urlClassLoaderConstructor = env_->GetMethodID(urlClassLoaderClass, "<init>", "([Ljava/net/URL;)V");
+        if (!urlClassLoaderConstructor || CheckJNIException()) {
+            LOG_ERROR(L"Failed to find URLClassLoader constructor");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            env_->DeleteLocalRef(uri);
+            env_->DeleteLocalRef(url);
+            return ErrorCode::METHOD_NOT_FOUND;
+        }
+        
+        // 创建URL数组
+        jclass urlClass = env_->FindClass("java/net/URL");
+        jobjectArray urlArray = env_->NewObjectArray(1, urlClass, url);
+        if (!urlArray || CheckJNIException()) {
+            LOG_ERROR(L"Failed to create URL array");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            env_->DeleteLocalRef(uri);
+            env_->DeleteLocalRef(url);
+            return ErrorCode::MEMORY_ALLOCATION_FAILED;
+        }
+        
+        // 创建ClassLoader
+        jobject newClassLoader = env_->NewObject(urlClassLoaderClass, urlClassLoaderConstructor, urlArray);
+        if (!newClassLoader || CheckJNIException()) {
+            LOG_ERROR(L"Failed to create URLClassLoader");
+            env_->DeleteLocalRef(jarPathJStr);
+            env_->DeleteLocalRef(jarFile);
+            env_->DeleteLocalRef(uri);
+            env_->DeleteLocalRef(url);
+            env_->DeleteLocalRef(urlArray);
+            return ErrorCode::OBJECT_CREATION_FAILED;
+        }
+        
+        // 清理旧的ClassLoader
+        if (classLoader_) {
+            env_->DeleteGlobalRef(classLoader_);
+        }
+        
+        // 保存新的ClassLoader为全局引用
+        classLoader_ = env_->NewGlobalRef(newClassLoader);
+        
+        // 清理本地引用
+        env_->DeleteLocalRef(jarPathJStr);
+        env_->DeleteLocalRef(jarFile);
+        env_->DeleteLocalRef(uri);
+        env_->DeleteLocalRef(url);
+        env_->DeleteLocalRef(urlArray);
+        env_->DeleteLocalRef(newClassLoader);
+        
+        LOG_INFO(L"ClassLoader created successfully for: " << jarPath);
+        return ErrorCode::SUCCESS;
+        
+    } catch (const std::exception& e) {
+        LOG_ERROR(L"Exception in CreateClassLoader: " << StringToWString(e.what()));
+        return ErrorCode::UNKNOWN_ERROR;
+    }
+}
+
+void JarLoader::Cleanup() {
+    std::lock_guard<std::mutex> lock(jniMutex_);
+    
+    try {
+        // 清理类缓存
+        if (env_) {
+            for (auto& pair : classCache_) {
+                if (pair.second) {
+                    env_->DeleteGlobalRef(pair.second);
+                }
+            }
+        }
+        classCache_.clear();
+        
+        // 清理ClassLoader
+        if (classLoader_ && env_) {
+            env_->DeleteGlobalRef(classLoader_);
+            classLoader_ = nullptr;
+        }
+        
+        // 分离线程（如果是附加的）
+        if (jvm_ && initialized_) {
+            jvm_->DetachCurrentThread();
+        }
+        
+        jvm_ = nullptr;
+        env_ = nullptr;
+        initialized_ = false;
+        
+        LOG_INFO(L"JarLoader cleanup completed");
+        
+    } catch (const std::exception& e) {
+        LOG_ERROR(L"Exception during cleanup: " << StringToWString(e.what()));
+    } catch (...) {
+        LOG_ERROR(L"Unknown exception during cleanup");
+    }
+}
+
+bool JarLoader::ValidateInput(const std::string& input, size_t maxLength) {
+    if (input.empty() || input.length() > maxLength) {
+        return false;
+    }
+    
+    // 检查是否包含危险字符
+    const std::string dangerousChars = ";<>|&$`";
+    for (char c : dangerousChars) {
+        if (input.find(c) != std::string::npos) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+void JarLoader::SetLastError(ErrorCode error) {
+    lastError_ = error;
+}
+
+ErrorCode JarLoader::GetLastError() const {
+    return lastError_;
 }
