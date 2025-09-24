@@ -41,6 +41,37 @@ enum class ErrorCode : int {
     UNKNOWN_ERROR = 9999
 };
 
+// 错误详情结构
+struct ErrorDetails {
+    ErrorCode code;
+    std::wstring message;
+    std::wstring context;
+    DWORD systemError;
+    std::string file;
+    int line;
+    
+    ErrorDetails() : code(ErrorCode::SUCCESS), systemError(0), line(0) {}
+    
+    ErrorDetails(ErrorCode c, const std::wstring& msg, const std::wstring& ctx = L"", 
+                DWORD sysErr = 0, const std::string& f = "", int l = 0)
+        : code(c), message(msg), context(ctx), systemError(sysErr), file(f), line(l) {}
+    
+    std::wstring ToString() const {
+        std::wstringstream ss;
+        ss << L"[" << static_cast<int>(code) << L"] " << message;
+        if (!context.empty()) {
+            ss << L" (Context: " << context << L")";
+        }
+        if (systemError != 0) {
+            ss << L" (System Error: " << systemError << L")";
+        }
+        if (!file.empty() && line > 0) {
+            ss << L" at " << StringToWString(file) << L":" << line;
+        }
+        return ss.str();
+    }
+};
+
 // 日志级别
 enum class LogLevel {
     DEBUG = 0,
@@ -98,6 +129,17 @@ private:
     ss << msg; \
     Logger::GetInstance().Log(LogLevel::CRITICAL, ss.str(), __FILE__, __LINE__); \
 } while(0)
+
+// 错误详情宏
+#define LOG_ERROR_DETAILS(errorDetails) do { \
+    Logger::GetInstance().Log(LogLevel::ERROR, errorDetails.ToString(), __FILE__, __LINE__); \
+} while(0)
+
+#define CREATE_ERROR_DETAILS(code, msg, context) \
+    ErrorDetails(code, msg, context, GetLastError(), __FILE__, __LINE__)
+
+#define CREATE_ERROR_DETAILS_NO_SYS(code, msg, context) \
+    ErrorDetails(code, msg, context, 0, __FILE__, __LINE__)
 
 // 常量定义
 constexpr DWORD INJECTION_TIMEOUT = 5000; // 5秒超时

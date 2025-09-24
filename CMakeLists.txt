@@ -55,3 +55,11 @@ set_target_properties(inject_dll PROPERTIES OUTPUT_NAME "inject")
 
 # 复制测试文件到输出目录
 configure_file(${CMAKE_SOURCE_DIR}/test/test.jar ${CMAKE_BINARY_DIR}/bin/test.jar COPYONLY)
+
+# 启用测试
+option(BUILD_TESTS "Build unit tests" ON)
+
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(test/cpp)
+endif()

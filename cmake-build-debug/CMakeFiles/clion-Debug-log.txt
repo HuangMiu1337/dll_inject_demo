@@ -1,7 +1,0 @@
-"D:\JetBrains\CLion 2024.1.6\bin\cmake\win\x64\bin\cmake.exe" -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_MAKE_PROGRAM=D:/JetBrains/CLion 2024.1.6/bin/ninja/win/x64/ninja.exe" -G Ninja -S F:\creative\dll_inject_demo -B F:\creative\dll_inject_demo\cmake-build-debug
-CMake Error: File F:/creative/dll_inject_demo/test/test.jar does not exist.
-CMake Error at CMakeLists.txt:53 (configure_file):
-  configure_file Problem configuring file
-
-
--- Configuring incomplete, errors occurred!

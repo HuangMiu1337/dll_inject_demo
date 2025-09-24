@@ -118,65 +118,42 @@ ErrorCode JarLoader::LoadJar(const std::wstring& jarPath) {
     }
     
     try {
-        // 将JAR路径转换为URL格式
-        std::string jarPathStr = WStringToString(jarPath);
-        std::string jarUrl = "file:///" + jarPathStr;
-        
-        // 替换反斜杠为正斜杠
-        for (char& c : jarUrl) {
-            if (c == '\\') c = '/';
-        }
-        
-        // 获取URLClassLoader类
-        jclass urlClassLoaderClass = env_->FindClass("java/net/URLClassLoader");
-        if (!urlClassLoaderClass) {
-            LOG_ERROR(L"Failed to find URLClassLoader class");
-            return false;
-        }
-        
-        // 获取URL类
-        jclass urlClass = env_->FindClass("java/net/URL");
-        if (!urlClass) {
-            LOG_ERROR(L"Failed to find URL class");
-            return false;
-        }
-        
-        // 创建URL对象
-        jmethodID urlConstructor = env_->GetMethodID(urlClass, "<init>", "(Ljava/lang/String;)V");
-        jstring jarUrlString = env_->NewStringUTF(jarUrl.c_str());
-        jobject urlObject = env_->NewObject(urlClass, urlConstructor, jarUrlString);
-        
-        if (!urlObject) {
-            LOG_ERROR(L"Failed to create URL object");
-            SetLastError(ErrorCode::JAVA_CLASS_NOT_FOUND);
-            return ErrorCode::JAVA_CLASS_NOT_FOUND;
-        }
-        
-        // 创建URL数组
-        jobjectArray urlArray = env_->NewObjectArray(1, urlClass, urlObject);
-        
-        // 获取URLClassLoader构造函数
-        jmethodID classLoaderConstructor = env_->GetMethodID(urlClassLoaderClass, "<init>", "([Ljava/net/URL;)V");
-        jobject classLoader = env_->NewObject(urlClassLoaderClass, classLoaderConstructor, urlArray);
-        
-        if (!classLoader) {
-            LOG_ERROR(L"Failed to create URLClassLoader");
-            SetLastError(ErrorCode::JAVA_CLASS_NOT_FOUND);
-            return ErrorCode::JAVA_CLASS_NOT_FOUND;
+        // 使用CreateClassLoader方法创建类加载器
+        ErrorCode result = CreateClassLoader(jarPath);
+        if (result != ErrorCode::SUCCESS) {
+            LOG_ERROR(L"Failed to create class loader for JAR: " << jarPath);
+            SetLastError(result);
+            return result;
         }
         
         // 设置当前线程的类加载器
-        jclass threadClass = env_->FindClass("java/lang/Thread");
-        jmethodID currentThreadMethod = env_->GetStaticMethodID(threadClass, "currentThread", "()Ljava/lang/Thread;");
-        jobject currentThread = env_->CallStaticObjectMethod(threadClass, currentThreadMethod);
+        if (classLoader_) {
+            jclass threadClass = env_->FindClass("java/lang/Thread");
+            if (threadClass && !CheckJNIException()) {
+                jmethodID currentThreadMethod = env_->GetStaticMethodID(threadClass, "currentThread", "()Ljava/lang/Thread;");
+                if (currentThreadMethod && !CheckJNIException()) {
+                    jobject currentThread = env_->CallStaticObjectMethod(threadClass, currentThreadMethod);
+                    if (currentThread && !CheckJNIException()) {
+                        jmethodID setContextClassLoaderMethod = env_->GetMethodID(threadClass, "setContextClassLoader", "(Ljava/lang/ClassLoader;)V");
+                        if (setContextClassLoaderMethod && !CheckJNIException()) {
+                            env_->CallVoidMethod(currentThread, setContextClassLoaderMethod, classLoader_);
+                            if (!CheckJNIException()) {
+                                currentJarPath_ = jarPath;
+                                LOG_INFO(L"JAR loaded successfully: " << jarPath);
+                                SetLastError(ErrorCode::SUCCESS);
+                                return ErrorCode::SUCCESS;
+                            }
+                        }
+                        env_->DeleteLocalRef(currentThread);
+                    }
+                }
+                env_->DeleteLocalRef(threadClass);
+            }
+        }
         
-        jmethodID setContextClassLoaderMethod = env_->GetMethodID(threadClass, "setContextClassLoader", "(Ljava/lang/ClassLoader;)V");
-        env_->CallVoidMethod(currentThread, setContextClassLoaderMethod, classLoader);
-        
-        currentJarPath_ = jarPath;
-        LOG_INFO(L"JAR loaded successfully: " << jarPath);
-        SetLastError(ErrorCode::SUCCESS);
-        return ErrorCode::SUCCESS;
+        LOG_ERROR(L"Failed to set context class loader");
+        SetLastError(ErrorCode::JAVA_METHOD_CALL_FAILED);
+        return ErrorCode::JAVA_METHOD_CALL_FAILED;
         
     } catch (const std::exception& e) {
         LOG_ERROR(L"Exception during JAR loading: " << StringToWString(e.what()));
@@ -333,8 +310,27 @@ jmethodID JarLoader::FindMethod(jclass clazz, const std::string& methodName, con
         return nullptr;
     }
     
+    // 创建缓存键：方法名 + 签名
+    std::string cacheKey = methodName + ":" + signature;
+    
+    // 检查缓存
+    auto it = methodCache_.find(cacheKey);
+    if (it != methodCache_.end()) {
+        return it->second;
+    }
+    
+    // 缓存中没有，查找方法
     jmethodID method = env_->GetStaticMethodID(clazz, methodName.c_str(), signature.c_str());
     if (!method) {
+        // 尝试实例方法
+        method = env_->GetMethodID(clazz, methodName.c_str(), signature.c_str());
+    }
+    
+    if (method) {
+        // 添加到缓存
+        methodCache_[cacheKey] = method;
+        LOG_DEBUG(L"Method cached: " << StringToWString(methodName));
+    } else {
         LOG_ERROR(L"Method not found: " << StringToWString(methodName));
     }
     
@@ -542,6 +538,9 @@ void JarLoader::Cleanup() {
             }
         }
         classCache_.clear();
+        
+        // 清理方法缓存
+        methodCache_.clear();
         
         // 清理ClassLoader
         if (classLoader_ && env_) {

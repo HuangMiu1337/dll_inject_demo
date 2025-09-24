@@ -148,10 +148,55 @@ void HotReloadManager::StopMonitoring() {
 void HotReloadManager::MonitorThreadFunc() {
     LOG_INFO(L"Hot reload monitor thread started");
     
+    // 性能优化：缓存文件句柄以减少系统调用
+    HANDLE fileHandle = CreateFileW(
+        watchedJarPath_.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    
+    // 如果无法获取文件句柄，回退到原始方法
+    bool useFileHandle = (fileHandle != INVALID_HANDLE_VALUE);
+    if (!useFileHandle) {
+        LOG_WARNING(L"Could not open file handle for monitoring, using fallback method");
+    }
+    
+    // 性能优化：动态调整检查间隔
+    int currentInterval = HOT_RELOAD_CHECK_INTERVAL;
+    int consecutiveNoChanges = 0;
+    const int maxInterval = 5000; // 最大5秒间隔
+    const int minInterval = HOT_RELOAD_CHECK_INTERVAL;
+    
     while (monitoring_) {
         try {
-            // 检查文件是否被修改
-            if (IsFileModified()) {
+            bool fileModified = false;
+            
+            if (useFileHandle) {
+                // 使用文件句柄检查修改时间（更高效）
+                BY_HANDLE_FILE_INFORMATION fileInfo;
+                if (GetFileInformationByHandle(fileHandle, &fileInfo)) {
+                    fileModified = CompareFileTime(&fileInfo.ftLastWriteTime, &lastModifyTime_) > 0;
+                    if (fileModified) {
+                        lastModifyTime_ = fileInfo.ftLastWriteTime;
+                    }
+                } else {
+                    // 文件句柄失效，回退到原始方法
+                    useFileHandle = false;
+                    CloseHandle(fileHandle);
+                    fileHandle = INVALID_HANDLE_VALUE;
+                }
+            }
+            
+            if (!useFileHandle) {
+                // 回退方法
+                fileModified = IsFileModified();
+            }
+            
+            if (fileModified) {
                 LOG_INFO(L"JAR file modification detected: " << watchedJarPath_);
                 
                 // 等待一小段时间确保文件写入完成
@@ -164,17 +209,35 @@ void HotReloadManager::MonitorThreadFunc() {
                     LOG_ERROR(L"JAR hot reload failed");
                 }
                 
-                // 更新最后修改时间
-                lastModifyTime_ = GetFileModifyTime(watchedJarPath_);
+                // 重置检查间隔
+                currentInterval = minInterval;
+                consecutiveNoChanges = 0;
+                
+                // 如果使用回退方法，更新最后修改时间
+                if (!useFileHandle) {
+                    lastModifyTime_ = GetFileModifyTime(watchedJarPath_);
+                }
+            } else {
+                // 动态调整检查间隔：如果长时间没有变化，增加检查间隔
+                consecutiveNoChanges++;
+                if (consecutiveNoChanges > 10 && currentInterval < maxInterval) {
+                    currentInterval = std::min(currentInterval * 2, maxInterval);
+                    LOG_DEBUG(L"Increased monitoring interval to " << currentInterval << L"ms");
+                }
             }
             
             // 等待检查间隔
-            std::this_thread::sleep_for(std::chrono::milliseconds(HOT_RELOAD_CHECK_INTERVAL));
+            std::this_thread::sleep_for(std::chrono::milliseconds(currentInterval));
             
         } catch (const std::exception& e) {
             LOG_ERROR(L"Exception in monitor thread: " << StringToWString(e.what()));
-            std::this_thread::sleep_for(std::chrono::milliseconds(HOT_RELOAD_CHECK_INTERVAL));
+            std::this_thread::sleep_for(std::chrono::milliseconds(currentInterval));
         }
+    }
+    
+    // 清理文件句柄
+    if (fileHandle != INVALID_HANDLE_VALUE) {
+        CloseHandle(fileHandle);
     }
     
     LOG_INFO(L"Hot reload monitor thread ended");

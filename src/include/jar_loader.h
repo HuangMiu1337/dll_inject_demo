@@ -76,6 +76,7 @@ private:
     ErrorCode lastError_;
     jobject classLoader_;  // URLClassLoader实例
     std::unordered_map<std::string, jclass> classCache_;  // 类缓存
+    std::unordered_map<std::string, jmethodID> methodCache_;  // 方法缓存
     std::mutex jniMutex_;  // JNI操作互斥锁
     
     // 设置错误码
