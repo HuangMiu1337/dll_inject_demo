@@ -34,14 +34,22 @@ ErrorCode HotReloadManager::StartMonitoring(const std::wstring& jarPath, const s
         return ErrorCode::INVALID_PARAMETER;
     }
     
-    if (jarPath.empty()) {
-        LOG_ERROR(L"JAR path is empty");
+    // 安全验证JAR路径
+    if (!SecurityUtils::ValidateJarPath(jarPath)) {
+        LOG_ERROR(L"JAR path failed security validation: " << jarPath);
         SetLastError(ErrorCode::INVALID_PARAMETER);
         return ErrorCode::INVALID_PARAMETER;
     }
     
-    if (className.empty() || methodName.empty()) {
-        LOG_ERROR(L"Class name or method name is empty");
+    // 安全验证类名和方法名
+    if (!SecurityUtils::ValidateClassName(className)) {
+        LOG_ERROR(L"Class name failed security validation: " << StringToWString(className));
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    
+    if (!SecurityUtils::ValidateMethodName(methodName)) {
+        LOG_ERROR(L"Method name failed security validation: " << StringToWString(methodName));
         SetLastError(ErrorCode::INVALID_PARAMETER);
         return ErrorCode::INVALID_PARAMETER;
     }
@@ -194,7 +202,8 @@ bool HotReloadManager::ReloadJar() {
         LOG_INFO(L"Reloading JAR: " << watchedJarPath_);
         
         // 卸载当前JAR
-        if (!jarLoader_->UnloadJar()) {
+        ErrorCode unloadResult = jarLoader_->UnloadJar();
+        if (unloadResult != ErrorCode::SUCCESS) {
             LOG_ERROR(L"Failed to unload current JAR");
             return false;
         }
@@ -203,14 +212,16 @@ bool HotReloadManager::ReloadJar() {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
         // 重新加载JAR
-        if (!jarLoader_->LoadJar(watchedJarPath_)) {
+        ErrorCode loadResult = jarLoader_->LoadJar(watchedJarPath_);
+        if (loadResult != ErrorCode::SUCCESS) {
             LOG_ERROR(L"Failed to reload JAR");
             return false;
         }
         
         // 调用指定的方法
         if (!watchedClassName_.empty() && !watchedMethodName_.empty()) {
-            if (!jarLoader_->CallJavaMethod(watchedClassName_, watchedMethodName_)) {
+            ErrorCode result = jarLoader_->CallJavaMethod(watchedClassName_, watchedMethodName_);
+            if (result != ErrorCode::SUCCESS) {
                 LOG_ERROR(L"Failed to call method after reload: " << StringToWString(watchedClassName_ + "." + watchedMethodName_));
                 return false;
             }
@@ -239,4 +250,12 @@ int CompareFileTime(const FILETIME* ft1, const FILETIME* ft2) {
     if (ul1.QuadPart < ul2.QuadPart) return -1;
     if (ul1.QuadPart > ul2.QuadPart) return 1;
     return 0;
+}
+
+void HotReloadManager::SetLastError(ErrorCode error) {
+    lastError_ = error;
+}
+
+ErrorCode HotReloadManager::GetLastError() const {
+    return lastError_;
 }

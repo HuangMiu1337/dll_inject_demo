@@ -148,7 +148,8 @@ ErrorCode JarLoader::LoadJar(const std::wstring& jarPath) {
         
         if (!urlObject) {
             LOG_ERROR(L"Failed to create URL object");
-            return false;
+            SetLastError(ErrorCode::JAVA_CLASS_NOT_FOUND);
+            return ErrorCode::JAVA_CLASS_NOT_FOUND;
         }
         
         // 创建URL数组
@@ -160,7 +161,8 @@ ErrorCode JarLoader::LoadJar(const std::wstring& jarPath) {
         
         if (!classLoader) {
             LOG_ERROR(L"Failed to create URLClassLoader");
-            return false;
+            SetLastError(ErrorCode::JAVA_CLASS_NOT_FOUND);
+            return ErrorCode::JAVA_CLASS_NOT_FOUND;
         }
         
         // 设置当前线程的类加载器
@@ -173,28 +175,36 @@ ErrorCode JarLoader::LoadJar(const std::wstring& jarPath) {
         
         currentJarPath_ = jarPath;
         LOG_INFO(L"JAR loaded successfully: " << jarPath);
-        return true;
+        SetLastError(ErrorCode::SUCCESS);
+        return ErrorCode::SUCCESS;
         
     } catch (const std::exception& e) {
         LOG_ERROR(L"Exception during JAR loading: " << StringToWString(e.what()));
-        return false;
+        SetLastError(ErrorCode::UNKNOWN_ERROR);
+        return ErrorCode::UNKNOWN_ERROR;
     }
 }
 
-bool JarLoader::UnloadJar() {
+ErrorCode JarLoader::UnloadJar() {
+    std::lock_guard<std::mutex> lock(jniMutex_);
+    
     if (!initialized_) {
-        return true;
+        SetLastError(ErrorCode::SUCCESS);
+        return ErrorCode::SUCCESS;
     }
     
     try {
         // 注意：Java中卸载类加载器是复杂的，这里只是简单的清理
         currentJarPath_.clear();
+        classCache_.clear();
         LOG_INFO(L"JAR unloaded");
-        return true;
+        SetLastError(ErrorCode::SUCCESS);
+        return ErrorCode::SUCCESS;
         
     } catch (const std::exception& e) {
         LOG_ERROR(L"Exception during JAR unloading: " << StringToWString(e.what()));
-        return false;
+        SetLastError(ErrorCode::UNKNOWN_ERROR);
+        return ErrorCode::UNKNOWN_ERROR;
     }
 }
 
@@ -225,7 +235,8 @@ ErrorCode JarLoader::CallJavaMethod(const std::string& className, const std::str
         jclass clazz = FindClass(className);
         if (!clazz) {
             LOG_ERROR(L"Failed to find class: " << StringToWString(className));
-            return false;
+            SetLastError(ErrorCode::JAVA_CLASS_NOT_FOUND);
+            return ErrorCode::JAVA_CLASS_NOT_FOUND;
         }
         
         // 构建方法签名
@@ -238,7 +249,8 @@ ErrorCode JarLoader::CallJavaMethod(const std::string& className, const std::str
         jmethodID method = FindMethod(clazz, methodName, signature);
         if (!method) {
             LOG_ERROR(L"Failed to find method: " << StringToWString(methodName));
-            return false;
+            SetLastError(ErrorCode::JAVA_METHOD_NOT_FOUND);
+            return ErrorCode::JAVA_METHOD_NOT_FOUND;
         }
         
         // 准备参数
@@ -275,15 +287,18 @@ ErrorCode JarLoader::CallJavaMethod(const std::string& className, const std::str
             env_->ExceptionDescribe();
             env_->ExceptionClear();
             LOG_ERROR(L"Java exception occurred during method call");
-            return false;
+            SetLastError(ErrorCode::JAVA_EXCEPTION);
+            return ErrorCode::JAVA_EXCEPTION;
         }
         
         LOG_INFO(L"Java method called successfully: " << StringToWString(className + "." + methodName));
-        return true;
+        SetLastError(ErrorCode::SUCCESS);
+        return ErrorCode::SUCCESS;
         
     } catch (const std::exception& e) {
         LOG_ERROR(L"Exception during Java method call: " << StringToWString(e.what()));
-        return false;
+        SetLastError(ErrorCode::UNKNOWN_ERROR);
+        return ErrorCode::UNKNOWN_ERROR;
     }
 }
 

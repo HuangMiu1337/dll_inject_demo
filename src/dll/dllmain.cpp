@@ -47,14 +47,16 @@ DWORD InitializeJarInjection() {
         g_jarLoader = std::make_unique<JarLoader>();
         
         // 初始化JVM
-        if (!g_jarLoader->InitializeJVM()) {
+        ErrorCode initResult = g_jarLoader->InitializeJVM();
+        if (initResult != ErrorCode::SUCCESS) {
             LOG_ERROR(L"Failed to initialize JVM");
             return 1;
         }
         
         // 加载JAR文件
         std::wstring jarPath(g_injectionData.jarPath);
-        if (!g_jarLoader->LoadJar(jarPath)) {
+        ErrorCode loadResult = g_jarLoader->LoadJar(jarPath);
+        if (loadResult != ErrorCode::SUCCESS) {
             LOG_ERROR(L"Failed to load JAR file: " << jarPath);
             return 1;
         }
@@ -63,7 +65,8 @@ DWORD InitializeJarInjection() {
         std::string className = WStringToString(g_injectionData.className);
         std::string methodName = WStringToString(g_injectionData.methodName);
         
-        if (!g_jarLoader->CallJavaMethod(className, methodName)) {
+        ErrorCode callResult = g_jarLoader->CallJavaMethod(className, methodName);
+        if (callResult != ErrorCode::SUCCESS) {
             LOG_ERROR(L"Failed to call Java method: " << g_injectionData.className << L"." << g_injectionData.methodName);
             return 1;
         }
@@ -71,7 +74,8 @@ DWORD InitializeJarInjection() {
         // 如果启用热重载，启动监控
         if (g_injectionData.enableHotReload) {
             g_hotReloadManager = std::make_unique<HotReloadManager>(g_jarLoader.get());
-            if (!g_hotReloadManager->StartMonitoring(jarPath, className, methodName)) {
+            ErrorCode monitorResult = g_hotReloadManager->StartMonitoring(jarPath, className, methodName);
+            if (monitorResult != ErrorCode::SUCCESS) {
                 LOG_ERROR(L"Failed to start hot reload monitoring");
             } else {
                 LOG_INFO(L"Hot reload monitoring started");
@@ -103,7 +107,10 @@ void CleanupJarInjection() {
         
         // 卸载JAR
         if (g_jarLoader) {
-            g_jarLoader->UnloadJar();
+            ErrorCode unloadResult = g_jarLoader->UnloadJar();
+            if (unloadResult != ErrorCode::SUCCESS) {
+                LOG_ERROR(L"Failed to unload JAR during cleanup");
+            }
             g_jarLoader.reset();
         }
         

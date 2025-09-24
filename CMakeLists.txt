@@ -21,6 +21,8 @@ add_executable(injector
     src/injector/process_utils.cpp
     src/injector/dll_injector.cpp
     src/common/utils.cpp
+    src/common/logger.cpp
+    src/common/security_utils.cpp
 )
 
 # 注入DLL
@@ -30,6 +32,8 @@ add_library(inject_dll SHARED
     src/dll/hot_reload.cpp
     src/dll/jni_bridge.cpp
     src/common/utils.cpp
+    src/common/logger.cpp
+    src/common/security_utils.cpp
 )
 
 # 链接库
