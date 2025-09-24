@@ -101,15 +101,20 @@ ErrorCode JarLoader::InitializeJVM() {
     }
 }
 
-bool JarLoader::LoadJar(const std::wstring& jarPath) {
+ErrorCode JarLoader::LoadJar(const std::wstring& jarPath) {
+    std::lock_guard<std::mutex> lock(jniMutex_);
+    
     if (!initialized_) {
         LOG_ERROR(L"JVM not initialized");
-        return false;
+        SetLastError(ErrorCode::JVM_NOT_INITIALIZED);
+        return ErrorCode::JVM_NOT_INITIALIZED;
     }
     
-    if (!FileExists(jarPath)) {
-        LOG_ERROR(L"JAR file not found: " << jarPath);
-        return false;
+    // 安全验证JAR路径
+    if (!SecurityUtils::ValidateJarPath(jarPath)) {
+        LOG_ERROR(L"JAR path failed security validation: " << jarPath);
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
     }
     
     try {
@@ -193,10 +198,26 @@ bool JarLoader::UnloadJar() {
     }
 }
 
-bool JarLoader::CallJavaMethod(const std::string& className, const std::string& methodName, const std::vector<std::string>& args) {
+ErrorCode JarLoader::CallJavaMethod(const std::string& className, const std::string& methodName, const std::vector<std::string>& args) {
+    std::lock_guard<std::mutex> lock(jniMutex_);
+    
     if (!initialized_) {
         LOG_ERROR(L"JVM not initialized");
-        return false;
+        SetLastError(ErrorCode::JVM_NOT_INITIALIZED);
+        return ErrorCode::JVM_NOT_INITIALIZED;
+    }
+    
+    // 安全验证类名和方法名
+    if (!SecurityUtils::ValidateClassName(className)) {
+        LOG_ERROR(L"Class name failed security validation: " << StringToWString(className));
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    
+    if (!SecurityUtils::ValidateMethodName(methodName)) {
+        LOG_ERROR(L"Method name failed security validation: " << StringToWString(methodName));
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
     }
     
     try {

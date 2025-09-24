@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "security_utils.h"
 #include <jni.h>
 #include <unordered_map>
 

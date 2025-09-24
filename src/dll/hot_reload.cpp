@@ -1,4 +1,6 @@
 #include "../include/hot_reload.h"
+#include <future>
+#include <chrono>
 
 HotReloadManager::HotReloadManager(JarLoader* jarLoader) 
     : jarLoader_(jarLoader), monitoring_(false), lastError_(ErrorCode::SUCCESS) {
@@ -16,45 +18,90 @@ HotReloadManager::~HotReloadManager() {
     LOG_DEBUG(L"HotReloadManager destroyed");
 }
 
-bool HotReloadManager::StartMonitoring(const std::wstring& jarPath, const std::string& className, const std::string& methodName) {
+ErrorCode HotReloadManager::StartMonitoring(const std::wstring& jarPath, const std::string& className, const std::string& methodName) {
+    std::lock_guard<std::mutex> lock(monitorMutex_);
+    
     if (monitoring_) {
         LOG_INFO(L"Hot reload monitoring already started");
-        return true;
+        SetLastError(ErrorCode::SUCCESS);
+        return ErrorCode::SUCCESS;
     }
     
+    // 输入验证
     if (!jarLoader_) {
         LOG_ERROR(L"JarLoader is null");
-        return false;
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    
+    if (jarPath.empty()) {
+        LOG_ERROR(L"JAR path is empty");
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    
+    if (className.empty() || methodName.empty()) {
+        LOG_ERROR(L"Class name or method name is empty");
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    
+    // 验证输入长度
+    if (className.length() > MAX_CLASS_NAME_LENGTH || methodName.length() > MAX_METHOD_NAME_LENGTH) {
+        LOG_ERROR(L"Class name or method name too long");
+        SetLastError(ErrorCode::INVALID_PARAMETER);
+        return ErrorCode::INVALID_PARAMETER;
     }
     
     if (!FileExists(jarPath)) {
         LOG_ERROR(L"JAR file not found for monitoring: " << jarPath);
-        return false;
+        SetLastError(ErrorCode::FILE_NOT_FOUND);
+        return ErrorCode::FILE_NOT_FOUND;
     }
     
-    // 保存监控参数
-    watchedJarPath_ = jarPath;
-    watchedClassName_ = className;
-    watchedMethodName_ = methodName;
-    lastModifyTime_ = GetFileModifyTime(jarPath);
-    
-    // 启动监控
-    monitoring_ = true;
-    
     try {
+        // 保存监控参数
+        watchedJarPath_ = jarPath;
+        watchedClassName_ = className;
+        watchedMethodName_ = methodName;
+        lastModifyTime_ = GetFileModifyTime(jarPath);
+        
+        // 启动监控
+        monitoring_ = true;
+        
         monitorThread_ = std::thread(&HotReloadManager::MonitorThreadFunc, this);
+        
+        // 等待线程启动
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        if (!monitoring_) {
+            LOG_ERROR(L"Monitor thread failed to start properly");
+            SetLastError(ErrorCode::THREAD_CREATION_FAILED);
+            return ErrorCode::THREAD_CREATION_FAILED;
+        }
+        
         LOG_INFO(L"Hot reload monitoring started for: " << jarPath);
-        return true;
+        SetLastError(ErrorCode::SUCCESS);
+        return ErrorCode::SUCCESS;
         
     } catch (const std::exception& e) {
         monitoring_ = false;
         LOG_ERROR(L"Failed to start monitoring thread: " << StringToWString(e.what()));
-        return false;
+        SetLastError(ErrorCode::THREAD_CREATION_FAILED);
+        return ErrorCode::THREAD_CREATION_FAILED;
+    } catch (...) {
+        monitoring_ = false;
+        LOG_ERROR(L"Unknown exception while starting monitoring thread");
+        SetLastError(ErrorCode::UNKNOWN_ERROR);
+        return ErrorCode::UNKNOWN_ERROR;
     }
 }
 
 void HotReloadManager::StopMonitoring() {
+    std::lock_guard<std::mutex> lock(monitorMutex_);
+    
     if (!monitoring_) {
+        LOG_DEBUG(L"Hot reload monitoring already stopped");
         return;
     }
     
@@ -62,8 +109,30 @@ void HotReloadManager::StopMonitoring() {
     monitoring_ = false;
     
     if (monitorThread_.joinable()) {
-        monitorThread_.join();
+        try {
+            // 等待线程结束，最多等待5秒
+            auto future = std::async(std::launch::async, [this]() {
+                monitorThread_.join();
+            });
+            
+            if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
+                LOG_WARNING(L"Monitor thread did not stop within timeout, detaching...");
+                monitorThread_.detach();
+            } else {
+                LOG_DEBUG(L"Monitor thread joined successfully");
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR(L"Exception while stopping monitor thread: " << StringToWString(e.what()));
+            if (monitorThread_.joinable()) {
+                monitorThread_.detach();
+            }
+        }
     }
+    
+    // 清理监控状态
+    watchedJarPath_.clear();
+    watchedClassName_.clear();
+    watchedMethodName_.clear();
     
     LOG_INFO(L"Hot reload monitoring stopped");
 }

@@ -11,9 +11,9 @@ DllInjector::~DllInjector() {
 std::vector<DWORD> DllInjector::FindProcessByName(const std::wstring& processName) {
     std::vector<DWORD> processIds;
     
-    // 输入验证
-    if (processName.empty()) {
-        LOG_ERROR(L"Process name cannot be empty");
+    // 安全验证
+    if (!SecurityUtils::ValidateProcessName(processName)) {
+        LOG_ERROR(L"Process name failed security validation: " << processName);
         return processIds;
     }
     
@@ -49,28 +49,41 @@ std::vector<DWORD> DllInjector::FindProcessByName(const std::wstring& processNam
     return processIds;
 }
 
-bool DllInjector::InjectDll(DWORD processId, const std::wstring& dllPath, const InjectionData& data) {
-    LOG_INFO(L"Attempting to inject DLL into process " << processId);
-
-    // 输入验证
+ErrorCode DllInjector::InjectDll(DWORD processId, const std::wstring& dllPath, const InjectionData& data) {
+    LOG_DEBUG(L"Starting DLL injection for process ID: " << processId);
+    
+    // 安全验证
     if (processId == 0) {
         LOG_ERROR(L"Invalid process ID: 0");
-        return false;
+        return ErrorCode::INVALID_PARAMETER;
     }
     
-    if (dllPath.empty()) {
-        LOG_ERROR(L"DLL path cannot be empty");
-        return false;
+    // 检查是否为系统关键进程
+    if (SecurityUtils::IsSystemCriticalProcess(processId)) {
+        LOG_ERROR(L"Cannot inject into system critical process: " << processId);
+        return ErrorCode::ACCESS_DENIED;
     }
     
-    if (!FileExists(dllPath)) {
-        LOG_ERROR(L"DLL file not found: " << dllPath);
-        return false;
+    // 验证DLL路径安全性
+    if (!SecurityUtils::ValidateDllPath(dllPath)) {
+        LOG_ERROR(L"DLL path failed security validation: " << dllPath);
+        return ErrorCode::INVALID_PARAMETER;
     }
     
     if (!data.IsValid()) {
         LOG_ERROR(L"Invalid injection data");
-        return false;
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    
+    // 检查当前进程权限
+    if (!SecurityUtils::HasSufficientPrivileges()) {
+        LOG_ERROR(L"Insufficient privileges for DLL injection");
+        return ErrorCode::ACCESS_DENIED;
+    }
+    
+    if (!FileExists(dllPath)) {
+        LOG_ERROR(L"DLL file not found: " << dllPath);
+        return ErrorCode::FILE_NOT_FOUND;
     }
 
     // 获取进程句柄

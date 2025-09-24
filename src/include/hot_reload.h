@@ -2,6 +2,8 @@
 
 #include "common.h"
 #include "jar_loader.h"
+#include "security_utils.h"
+#include <mutex>
 
 class HotReloadManager {
 public:
@@ -9,13 +11,16 @@ public:
     ~HotReloadManager();
 
     // 开始监控文件变化
-    bool StartMonitoring(const std::wstring& jarPath, const std::string& className, const std::string& methodName);
+    ErrorCode StartMonitoring(const std::wstring& jarPath, const std::string& className, const std::string& methodName);
     
     // 停止监控
     void StopMonitoring();
     
     // 检查是否正在监控
     bool IsMonitoring() const { return monitoring_; }
+    
+    // 获取最后的错误
+    ErrorCode GetLastError() const { return lastError_; }
 
 private:
     JarLoader* jarLoader_;
@@ -25,6 +30,8 @@ private:
     std::string watchedClassName_;
     std::string watchedMethodName_;
     FILETIME lastModifyTime_;
+    ErrorCode lastError_;
+    mutable std::mutex monitorMutex_;
     
     // 监控线程函数
     void MonitorThreadFunc();
@@ -34,4 +41,7 @@ private:
     
     // 重新加载JAR
     bool ReloadJar();
+    
+    // 设置错误码
+    void SetLastError(ErrorCode error) { lastError_ = error; }
 };

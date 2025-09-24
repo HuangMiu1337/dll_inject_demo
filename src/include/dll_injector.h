@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "security_utils.h"
 #include <tlhelp32.h>
 #include <psapi.h>
 
